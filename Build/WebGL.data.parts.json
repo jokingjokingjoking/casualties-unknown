@@ -1,0 +1,78 @@
+{
+  "format": "cu-dataparts/1",
+  "buildId": "844cc98fda5a2374",
+  "source": "WebGL.data.br",
+  "sourceEncoding": "brotli",
+  "rawBytes": 210759874,
+  "rawSha256": "844cc98fda5a2374db6691fc7781d9f0e78d42c5a73c399cfb219dac40ba10f2",
+  "partBytes": 194876543,
+  "maxPartBytes": 19000000,
+  "parts": [
+    {
+      "name": "WebGL.data.part01",
+      "bytes": 16637086,
+      "rawBytes": 19159989,
+      "sha256": "7b5769e5cbcc1c3ba9caf3702482160904c803c14f228ab5930aef69ae8df6a9"
+    },
+    {
+      "name": "WebGL.data.part02",
+      "bytes": 17545310,
+      "rawBytes": 19159989,
+      "sha256": "3189e30e6fdb835e091a9fb32920404871d291f14e5b5079e0da25ad3caec144"
+    },
+    {
+      "name": "WebGL.data.part03",
+      "bytes": 18746948,
+      "rawBytes": 19159989,
+      "sha256": "8c30509d615bb9bca9f5eece73a4d75906512a7690aca8999383803e69807247"
+    },
+    {
+      "name": "WebGL.data.part04",
+      "bytes": 18607591,
+      "rawBytes": 19159989,
+      "sha256": "a71718573c35ab0e19120d8e81787856e70d9339591b6140c717a31e503bb072"
+    },
+    {
+      "name": "WebGL.data.part05",
+      "bytes": 18644078,
+      "rawBytes": 19159989,
+      "sha256": "1fece0e1d226233372d6716ef12e3687723bd1e78a07d0d59d1cf6f4f775766b"
+    },
+    {
+      "name": "WebGL.data.part06",
+      "bytes": 18609495,
+      "rawBytes": 19159989,
+      "sha256": "6200939f767a9150687ee2704f76daa7f1c72e7864a41b400b8b61ce6916ad81"
+    },
+    {
+      "name": "WebGL.data.part07",
+      "bytes": 18495476,
+      "rawBytes": 19159989,
+      "sha256": "dbe03660835afb9281acdde5617ec90db4c7499c567e3fde1c1c051d8dc8cceb"
+    },
+    {
+      "name": "WebGL.data.part08",
+      "bytes": 18587171,
+      "rawBytes": 19159989,
+      "sha256": "521092dbc1c78fad8d5428ae615ca1f0f348fe0123df60a7ba3445b3a0700c4c"
+    },
+    {
+      "name": "WebGL.data.part09",
+      "bytes": 18758970,
+      "rawBytes": 19159989,
+      "sha256": "5a749ddfa809ff42f97e5d4beab4496f97ca6ac057f10c1b10933103146225c5"
+    },
+    {
+      "name": "WebGL.data.part10",
+      "bytes": 18240689,
+      "rawBytes": 19159989,
+      "sha256": "b97ca4b72328ba370fbdc4b34e8d234e75fb6c4e65acbdcc01ed271a81ff018c"
+    },
+    {
+      "name": "WebGL.data.part11",
+      "bytes": 12003729,
+      "rawBytes": 19159984,
+      "sha256": "bb75a58122e69d3078a0b024bc6207a142d7b07027350bcf798057ec781af7a3"
+    }
+  ]
+}

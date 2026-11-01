@@ -1,0 +1,11 @@
+/*
+  X-Content-Type-Options: nosniff
+
+/Build/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/ServiceWorker.js
+  Cache-Control: no-cache
+
+/
+  Cache-Control: no-cache

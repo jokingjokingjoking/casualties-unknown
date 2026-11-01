@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Unity WebGL Player | CasualtiesUnknown</title>
+    <link rel="shortcut icon" href="TemplateData/favicon.ico">
+    <link rel="stylesheet" href="TemplateData/style.css">
+    <link rel="manifest" href="manifest.webmanifest">
+
+    <script>
+      (function () {
+        var DB_NAME = "cu-loader";
+        var STORE = "files";
+        var TABS = ["music", "languages"];
+
+        window.__cuLoaderFiles = { music: new Map(), languages: new Map() };
+        window.__cuLoaderGeneration = 0;
+
+        window.__cuLoaderRefresh = function () {
+          var req;
+          try {
+            req = indexedDB.open(DB_NAME, 1);
+          } catch (e) {
+            window.__cuLoaderGeneration++;
+            return;
+          }
+          req.onupgradeneeded = function () {
+            req.result.createObjectStore(STORE, { keyPath: ["tab", "name"] });
+          };
+          req.onerror = function () {
+            window.__cuLoaderGeneration++;
+          };
+          req.onsuccess = function () {
+            var db = req.result;
+            var finish = function () {
+              window.__cuLoaderGeneration++;
+              try { db.close(); } catch (e) {}
+            };
+            var tx;
+            try {
+              tx = db.transaction(STORE, "readonly");
+            } catch (e) {
+              finish();
+              return;
+            }
+            var getAll = tx.objectStore(STORE).getAll();
+            getAll.onerror = finish;
+            getAll.onsuccess = function () {
+              var files = { music: new Map(), languages: new Map() };
+              var records = (getAll.result || []).filter(function (r) {
+                return r && r.blob && TABS.indexOf(r.tab) !== -1;
+              });
+              var pending = 0;
+              var done = function () {
+                if (pending === 0) {
+                  window.__cuLoaderFiles = files;
+                  finish();
+                }
+              };
+              records.forEach(function (record) {
+                files[record.tab].set(record.name, record.blob);
+                if (record.tab === "languages") {
+                  pending++;
+                  record.blob.text().then(function (text) {
+                    record.__cuText = text;
+                  }).catch(function () {
+                    record.__cuText = null;
+                  }).finally(function () {
+                    pending--;
+                    done();
+                  });
+                }
+              });
+              done();
+            };
+          };
+        };
+
+        window.__cuLoaderRefresh();
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="unity-container">
+      <canvas id="unity-canvas" width=960 height=600 tabindex="-1"></canvas>
+      <div id="unity-loading-bar">
+        <div id="unity-loading-title">Casualties Unknown Loader</div>
+        <div id="unity-progress-bar-empty">
+          <div id="unity-progress-bar-full"></div>
+        </div>
+        <div id="unity-progress-label">0%</div>
+      </div>
+      <div id="unity-warning"> </div>
+    </div>
+    <script>
+      window.addEventListener("load", function () {
+        if ("serviceWorker" in navigator) {
+          navigator.serviceWorker.register("ServiceWorker.js").catch(function (e) {
+
+            console.warn("service worker registration failed:", e);
+          });
+        }
+      });
+
+      (function () {
+        var contexts = [];
+        var Native = window.AudioContext || window.webkitAudioContext;
+        if (Native && typeof Proxy === "function" && typeof Reflect === "object") {
+          var Patched = new Proxy(Native, {
+            construct: function (target, args) {
+              var ctx = Reflect.construct(target, args);
+              contexts.push(ctx);
+              return ctx;
+            }
+          });
+          window.AudioContext = Patched;
+          if (window.webkitAudioContext) window.webkitAudioContext = Patched;
+        }
+
+        var events = ["keydown", "keyup", "pointerdown", "click", "touchend", "wheel"];
+        var lastRun = 0;
+
+        function keepAlive() {
+
+          var now = Date.now();
+          if (now - lastRun < 200) return;
+          lastRun = now;
+
+          try { window.dispatchEvent(new MouseEvent("mousedown")); } catch (e) {}
+
+          for (var i = 0; i < contexts.length; i++) {
+            if (contexts[i].state === "suspended") {
+              try { contexts[i].resume().catch(function () {}); } catch (e) {}
+            }
+          }
+        }
+
+        for (var i = 0; i < events.length; i++) {
+          window.addEventListener(events[i], keepAlive, true);
+        }
+
+        window.__audioContexts = function () { return contexts; };
+
+        var finalNodes = [];
+        if (window.AudioNode && AudioNode.prototype.connect) {
+          var origConnect = AudioNode.prototype.connect;
+          AudioNode.prototype.connect = function (dest) {
+            try {
+              for (var i = 0; i < contexts.length; i++) {
+                if (dest === contexts[i].destination) finalNodes.push(this);
+              }
+            } catch (e) {}
+            return origConnect.apply(this, arguments);
+          };
+        }
+        window.__audioFinalNodes = function () { return finalNodes; };
+      })();
+
+      var bridgeState = null;
+      var bridgeStarting = false;
+
+      var WORKLET_SRC = [
+        "const W=0,R=1,UN=2,OV=3,FIX=4,FILL=5,SIL=6,RP=7,WQ=8,RQ=9;",
+        "class BW extends AudioWorkletProcessor{",
+        " constructor(o){super();var p=o.processorOptions;this.cap=p.cap;",
+        "  this.c=new Int32Array(p.sab,0,16);this.d=new Float32Array(p.sab,64,p.cap*2);}",
+
+        " process(ins){var i=ins[0],L=null,Rr=null,n=128;",
+        "  Atomics.add(this.c,WQ,1);",
+        "  if(i&&i.length&&i[0]&&i[0].length){L=i[0];Rr=i.length>1?i[1]:i[0];n=L.length;}",
+        "  else Atomics.add(this.c,SIL,1);",
+        "  var cap=this.cap;",
+        "  var w=Atomics.load(this.c,W),r=Atomics.load(this.c,R);",
+        "  var used=(w-r+cap)%cap,free=cap-used-1;",
+        "  if(free<n)Atomics.add(this.c,OV,1);",
+        "  var cnt=n<free?n:free;",
+        "  for(var k=0;k<cnt;k++){var x=((w+k)%cap)*2;",
+        "   this.d[x]=L?L[k]:0;this.d[x+1]=Rr?Rr[k]:0;}",
+        "  Atomics.store(this.c,W,(w+cnt)%cap);return true;}}",
+        "class BR extends AudioWorkletProcessor{",
+        " constructor(o){super();var p=o.processorOptions;this.cap=p.cap;",
+        "  this.t=p.target;this.b=p.band;this.p=p.prime;this.primed=false;",
+        "  this.c=new Int32Array(p.sab,0,16);this.d=new Float32Array(p.sab,64,p.cap*2);}",
+        " process(_,outs){var o=outs[0],L=o[0],Rr=o.length>1?o[1]:o[0];",
+        "  var n=L.length,cap=this.cap;Atomics.add(this.c,RQ,1);",
+        "  var r=Atomics.load(this.c,R),w=Atomics.load(this.c,W);",
+        "  var used=(w-r+cap)%cap;Atomics.store(this.c,FILL,used);",
+
+        "  if(!this.primed){if(used<this.p){for(var z=0;z<n;z++){L[z]=0;Rr[z]=0;}",
+        "   Atomics.add(this.c,UN,n);return true;}",
+        "   this.primed=true;}",
+
+        "  var fix=0;if(used>this.t+this.b)fix=1;else if(used<this.t-this.b&&used>n)fix=-1;",
+
+        "  for(var k=0;k<n;k++){",
+        "   if(used<=0){L[k]=0;Rr[k]=0;Atomics.add(this.c,UN,1);",
+        "    if(this.primed){this.primed=false;Atomics.add(this.c,RP,1);}continue;}",
+        "   var x=r*2;L[k]=this.d[x];Rr[k]=this.d[x+1];r=(r+1)%cap;used--;}",
+        "  if(fix===1&&used>0){r=(r+1)%cap;Atomics.add(this.c,FIX,1);}",
+        "  else if(fix===-1){r=(r-1+cap)%cap;Atomics.add(this.c,FIX,1);}",
+        "  Atomics.store(this.c,R,r);return true;}}",
+        "registerProcessor('bridge-writer',BW);registerProcessor('bridge-reader',BR);"
+      ].join("\n");
+
+      async function __audioBridgeOnce(deviceId, mode, opts) {
+        var finals = window.__audioFinalNodes ? window.__audioFinalNodes() : [];
+
+        var uniq = [], groups = [];
+        for (var i = 0; i < finals.length; i++) {
+          var n = finals[i];
+          if (!n || n.__bridge || !n.context || n.context.state === "closed") continue;
+          if (uniq.indexOf(n) !== -1) continue;
+          uniq.push(n);
+          var g = null;
+          for (var j = 0; j < groups.length; j++) if (groups[j].ctx === n.context) g = groups[j];
+          if (!g) { g = { ctx: n.context, nodes: [] }; groups.push(g); }
+          g.nodes.push(n);
+        }
+        if (!groups.length) return "nothing live feeding a destination -- get audio playing first";
+
+        groups.sort(function (a, b) { return b.nodes.length - a.nodes.length; });
+        var src = groups[0];
+        if (bridgeState) return "already bridged";
+
+        var msd = src.ctx.createMediaStreamDestination();
+
+        var collector = src.ctx.createGain();
+        collector.gain.value = 0.85;
+        var limiter = src.ctx.createDynamicsCompressor();
+        limiter.threshold.value = -3;
+        limiter.knee.value = 0;
+        limiter.ratio.value = 20;
+        limiter.attack.value = 0.002;
+        limiter.release.value = 0.1;
+        collector.__bridge = limiter.__bridge = true;
+        collector.connect(limiter);
+        limiter.connect(msd);
+
+        var moved = 0;
+        for (var k = 0; k < src.nodes.length; k++) {
+          try {
+            src.nodes[k].connect(collector);
+
+            try { src.nodes[k].disconnect(src.ctx.destination); } catch (e) {}
+            moved++;
+          } catch (e) {}
+        }
+
+        var out = null, el = null, ms = null, gain = null;
+        var writer = null, reader = null, workletRing = null, pumpSrc = null, pumpGain = null;
+
+        mode = mode || "worklet";
+
+        if (mode === "worklet") {
+          var Ctor2 = window.AudioContext || window.webkitAudioContext;
+          if (typeof SharedArrayBuffer !== "function" || !self.crossOriginIsolated) {
+            console.warn("worklet mode needs crossOriginIsolated + SharedArrayBuffer; falling back to element");
+            mode = "element";
+          } else {
+            out = new Ctor2();
+            try { await out.resume(); } catch (e) {}
+            if (deviceId && out.setSinkId) { try { await out.setSinkId(deviceId); } catch (e) {} }
+
+            if (out.sampleRate !== src.ctx.sampleRate) {
+              console.warn("worklet mode: rate mismatch " + src.ctx.sampleRate + " vs " +
+                           out.sampleRate + "; falling back to element");
+              try { await out.close(); } catch (e) {}
+              out = null;
+              mode = "element";
+            }
+          }
+        }
+        if (mode === "worklet") {
+
+          try {
+
+            var tune = opts || {};
+            var CAP = tune.cap || 8192;
+            var TARGET = tune.target || 3600;
+            var PRIME = tune.prime || 3000;
+            var BAND = tune.band || 600;
+            var sab = new SharedArrayBuffer(64 + CAP * 2 * 4);
+            workletRing = { sab: sab, cap: CAP, ctrl: new Int32Array(sab, 0, 16),
+                            target: TARGET, prime: PRIME, rate: src.ctx.sampleRate };
+
+            var url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "text/javascript" }));
+            try {
+              await src.ctx.audioWorklet.addModule(url);
+              await out.audioWorklet.addModule(url);
+            } finally { URL.revokeObjectURL(url); }
+
+            var opts2 = { processorOptions: { sab: sab, cap: CAP, target: TARGET, band: BAND, prime: PRIME },
+                         numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] };
+            writer = new AudioWorkletNode(src.ctx, "bridge-writer", opts2);
+            reader = new AudioWorkletNode(out, "bridge-reader",
+                       { processorOptions: opts2.processorOptions, numberOfInputs: 0,
+                         numberOfOutputs: 1, outputChannelCount: [2] });
+            writer.__bridge = reader.__bridge = true;
+
+            limiter.connect(writer);
+
+            writer.connect(msd);
+            pumpSrc = out.createMediaStreamSource(msd.stream);
+            pumpGain = out.createGain();
+            pumpGain.gain.value = 0;
+            pumpSrc.__bridge = pumpGain.__bridge = true;
+            pumpSrc.connect(pumpGain);
+            pumpGain.connect(out.destination);
+            reader.connect(out.destination);
+          } catch (e) {
+            console.warn("worklet bridge failed (" + e + "); falling back to element");
+            if (pumpSrc) { try { pumpSrc.disconnect(); } catch (e2) {} pumpSrc = null; }
+            if (pumpGain) { try { pumpGain.disconnect(); } catch (e2) {} pumpGain = null; }
+            if (writer) { try { writer.disconnect(); } catch (e2) {} writer = null; }
+            if (reader) { try { reader.disconnect(); } catch (e2) {} reader = null; }
+            workletRing = null;
+            if (out) { try { out.close(); } catch (e2) {} out = null; }
+            mode = "element";
+          }
+        }
+
+        if (mode === "element" && !el) {
+          el = new Audio();
+          el.__bridge = true;
+          el.srcObject = msd.stream;
+          el.autoplay = true;
+          if (deviceId && el.setSinkId) { try { await el.setSinkId(deviceId); } catch (e) {} }
+          try { await el.play(); } catch (e) { mode = "context"; }
+        }
+        if (mode === "context") {
+          if (el) { try { el.pause(); el.srcObject = null; } catch (e) {} el = null; }
+          var Ctor = window.AudioContext || window.webkitAudioContext;
+
+          out = new Ctor({ latencyHint: "playback" });
+          try { await out.resume(); } catch (e) {}
+          if (deviceId && out.setSinkId) { try { await out.setSinkId(deviceId); } catch (e) {} }
+          ms = out.createMediaStreamSource(msd.stream);
+          gain = out.createGain();
+          gain.gain.value = 1;
+          ms.__bridge = gain.__bridge = true;
+          ms.connect(gain);
+          gain.connect(out.destination);
+        }
+
+        bridgeState = { ctx: src.ctx, msd: msd, out: out, el: el, gain: gain,
+                        collector: collector, limiter: limiter, nodes: src.nodes, mode: mode,
+                        writer: writer, reader: reader, ring: workletRing,
+                        pumpSrc: pumpSrc, pumpGain: pumpGain };
+
+        if (!window.__bridgeConnectPatched && window.AudioNode) {
+          window.__bridgeConnectPatched = true;
+          var origConn = AudioNode.prototype.connect;
+          AudioNode.prototype.connect = function (d) {
+            if (bridgeState && !this.__bridge && d === bridgeState.ctx.destination) {
+
+              try {
+                var args = [bridgeState.collector].concat(Array.prototype.slice.call(arguments, 1));
+                return origConn.apply(this, args);
+              } catch (e) {}
+            }
+            return origConn.apply(this, arguments);
+          };
+        }
+
+        return {
+          bridged: moved + " node(s)",
+          mode: mode + (mode === "element" ? " (<audio>, minimal buffer)" : " (AudioContext)"),
+          fromContext: src.ctx.sampleRate + "Hz " + src.ctx.state,
+          toContext: out ? (out.sampleRate + "Hz " + out.state) : "n/a",
+          sinkId: (el ? (el.sinkId || "default") : (out && out.sinkId !== undefined ? (out.sinkId || "default") : "n/a")),
+          streamActive: msd.stream.active,
+          tracks: msd.stream.getAudioTracks().length,
+          headroom: collector.gain.value, limiterThresholdDb: limiter.threshold.value
+        };
+      };
+
+      window.__audioBridge = async function (deviceId, mode, opts) {
+        if (bridgeStarting) return "bridge attempt already in progress";
+        bridgeStarting = true;
+        try {
+          return await __audioBridgeOnce(deviceId, mode, opts);
+        } finally {
+          bridgeStarting = false;
+        }
+      };
+
+      window.__audioBridgeState = function () { return bridgeState; };
+
+      (function () {
+
+        var ua = navigator.userAgent || "";
+        var isFirefox = /Firefox|FxiOS/.test(ua);
+        var isChromium = navigator.userAgentData && navigator.userAgentData.brands
+          ? navigator.userAgentData.brands.some(function (b) { return b.brand === "Chromium"; })
+          : /Chrome|Chromium|CriOS/.test(ua);
+        if (isFirefox || !isChromium) return;
+
+        var CHECK_MS = 4000, LOUD = 1e-4, armed = false, tripped = false;
+
+        function peakIntoDestination() {
+          var finals = (window.__audioFinalNodes ? window.__audioFinalNodes() : [])
+            .filter(function (n) { return n && !n.__bridge && n.context && n.context.state === "running"; });
+          if (!finals.length) return null;
+          var ctx = finals[0].context;
+          if (!ctx.__watchTap) {
+            var an = ctx.createAnalyser();
+            an.fftSize = 1024;
+            an.__bridge = true;
+            ctx.__watchTap = { an: an, buf: new Float32Array(1024), wired: [] };
+          }
+          var tap = ctx.__watchTap;
+          for (var i = 0; i < finals.length; i++) {
+            if (tap.wired.indexOf(finals[i]) === -1) {
+              try { finals[i].connect(tap.an); tap.wired.push(finals[i]); } catch (e) {}
+            }
+          }
+          tap.an.getFloatTimeDomainData(tap.buf);
+          var pk = 0;
+          for (var j = 0; j < tap.buf.length; j++) { var a = tap.buf[j] < 0 ? -tap.buf[j] : tap.buf[j]; if (a > pk) pk = a; }
+          return pk;
+        }
+
+        function releaseWatchTap() {
+          var cs = window.__audioContexts ? window.__audioContexts() : [];
+          for (var i = 0; i < cs.length; i++) {
+            var tap = cs[i].__watchTap;
+            if (!tap) continue;
+            for (var j = 0; j < tap.wired.length; j++) {
+              try { tap.wired[j].disconnect(tap.an); } catch (e) {}
+            }
+            try { tap.an.disconnect(); } catch (e) {}
+            tap.wired.length = 0;
+            cs[i].__watchTap = null;
+          }
+        }
+
+        setInterval(function () {
+          if (tripped || !window.__audioBridge || !window.__audioBridgeState) return;
+
+          if (window.__audioBridgeState()) { tripped = true; releaseWatchTap(); return; }
+          var pk = peakIntoDestination();
+          if (pk === null) return;
+
+          if (pk > LOUD) {
+            if (!armed) { armed = true; return; }
+            tripped = true;
+            window.__audioBridge().then(function (r) {
+              console.log("audio auto-bridged:", r && r.bridged);
+            }, function (e) { console.warn("auto-bridge failed:", e); })
+
+              .then(releaseWatchTap, releaseWatchTap);
+          } else {
+            armed = false;
+          }
+        }, CHECK_MS);
+      })();
+
+      var container = document.querySelector("#unity-container");
+      var canvas = document.querySelector("#unity-canvas");
+      var loadingBar = document.querySelector("#unity-loading-bar");
+      var progressBarFull = document.querySelector("#unity-progress-bar-full");
+      var warningBanner = document.querySelector("#unity-warning");
+
+      function unityShowBanner(msg, type) {
+        function updateBannerVisibility() {
+          warningBanner.style.display = warningBanner.children.length ? 'block' : 'none';
+        }
+        var div = document.createElement('div');
+        div.innerHTML = msg;
+        warningBanner.appendChild(div);
+        if (type == 'error') div.style = 'background: red; padding: 10px;';
+        else {
+          if (type == 'warning') div.style = 'background: yellow; padding: 10px;';
+          setTimeout(function() {
+            warningBanner.removeChild(div);
+            updateBannerVisibility();
+          }, 5000);
+        }
+        updateBannerVisibility();
+      }
+
+      var buildUrl = "Build";
+      var loaderUrl = buildUrl + "/WebGL.loader.js";
+      var config = {
+        streamingAssetsUrl: "StreamingAssets",
+        companyName: "Orsoniks",
+        productName: "CasualtiesUnknown",
+        productVersion: "7.0.1",
+        showBanner: unityShowBanner,
+      };
+
+      window.__cuQuit = function () {
+        var closed = false;
+        try {
+          window.close();
+          closed = window.closed;
+        } catch (e) {}
+        if (closed) return;
+        var d = document.createElement("div");
+        d.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:flex;" +
+          "align-items:center;justify-content:center;background:#000;color:#8a8f98;" +
+          "font:14px/1.6 system-ui,sans-serif;text-align:center;padding:24px";
+        d.innerHTML = "<div>Thanks for playing.<br>" +
+          "<span style=\"color:#5c6068\">The browser will not let a page close a tab it " +
+          "did not open — close this tab, or reload to play again.</span></div>";
+        document.body.appendChild(d);
+      };
+
+      (function () {
+        var allowSticky = location.search.indexOf("nostickyfs") === -1;
+        var sticky = false;
+        var refused = 0;
+        function targetEl() {
+          return document.getElementById("unity-canvas") || document.documentElement;
+        }
+        function enter() {
+          if (document.fullscreenElement) return;
+          try {
+            var p = targetEl().requestFullscreen({ navigationUI: "hide" });
+            if (p && p.catch) p.catch(function () { if (++refused >= 4) sticky = false; });
+          } catch (e) { if (++refused >= 4) sticky = false; }
+        }
+        document.addEventListener("fullscreenchange", function () {
+          if (document.fullscreenElement) { sticky = allowSticky; refused = 0; }
+
+        });
+        window.addEventListener("pointerdown", function () {
+          if (sticky && !document.fullscreenElement) enter();
+        }, true);
+
+        window.__cuSetFullscreen = function (on) {
+          if (on) {
+            sticky = allowSticky;
+            refused = 0;
+            enter();
+          } else {
+            sticky = false;
+            if (document.fullscreenElement) {
+              try {
+                var p = document.exitFullscreen();
+                if (p && p.catch) p.catch(function () {});
+              } catch (e) {}
+            }
+          }
+        };
+      })();
+
+      (function () {
+        var locked = false;
+        var pending = false;
+        var lastFail = 0;
+        var RETRY_MS = 1000;
+        function report(ok, err) {
+          pending = false;
+          if (err) { lastFail = Date.now(); }
+          locked = ok;
+        }
+
+        function tryLock(force) {
+          if (!document.fullscreenElement || locked || pending) return;
+          if (!force && Date.now() - lastFail < RETRY_MS) return;
+          if (navigator.keyboard && typeof navigator.keyboard.lock === "function") {
+            var p;
+            try {
+              p = navigator.keyboard.lock();
+              pending = true;
+            } catch (e) {
+              report(false, e);
+              return;
+            }
+            if (p && typeof p.then === "function") {
+              p.then(function () { report(true); }, function (e) { report(false, e); });
+            } else {
+              report(true);
+            }
+          }
+        }
+        document.addEventListener("fullscreenchange", function () {
+          if (document.fullscreenElement) {
+            tryLock(true);
+          } else if (locked) {
+            if (navigator.keyboard && typeof navigator.keyboard.unlock === "function") {
+              try { navigator.keyboard.unlock(); } catch (e) {}
+            }
+            report(false);
+          }
+        });
+        ["keydown", "pointerdown"].forEach(function (ev) {
+          window.addEventListener(ev, function () {
+            if (document.fullscreenElement && !locked) tryLock(false);
+          }, true);
+        });
+      })();
+
+      if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+
+        var meta = document.createElement('meta');
+        meta.name = 'viewport';
+        meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
+        document.getElementsByTagName('head')[0].appendChild(meta);
+      }
+
+      loadingBar.style.display = "flex";
+
+      var dataPartsManifest = buildUrl + "/WebGL.data.parts.json";
+      var dataPartBase = buildUrl + "/";
+      var dataSentinel = "cu-parts://WebGL.data";
+      var wasmSentinel = "cu-parts://WebGL.wasm";
+      config.dataUrl = dataSentinel;
+      config.frameworkUrl = buildUrl + "/WebGL.framework.js";
+      config.codeUrl = wasmSentinel;
+
+      var splitPayloadSupported = typeof DecompressionStream === "function" &&
+        typeof ReadableStream === "function";
+
+      (function () {
+        if (!splitPayloadSupported) return;
+        var realFetch = window.fetch.bind(window);
+        var manifest = null;
+
+        function fail(message) {
+          unityShowBanner(message, "error");
+          return new Error(message);
+        }
+
+        function loadManifest() {
+          if (!manifest) {
+            manifest = realFetch(dataPartsManifest, { cache: "no-cache" }).then(function (res) {
+              if (!res.ok) {
+                throw fail("Unable to load " + dataPartsManifest + " (HTTP " + res.status +
+                  "). The split game data parts must be uploaded next to it.");
+              }
+              return res.json();
+            }).catch(function (err) {
+              manifest = null;
+              throw err instanceof Error ? err : fail(String(err));
+            });
+          }
+          return manifest;
+        }
+
+        function partsStream(m) {
+          var index = 0;
+          var written = 0;
+          var inflight = [];
+          var current = null;
+
+          function partBytes(i) {
+            if (!inflight[i]) {
+              inflight[i] = realFetch(dataPartBase + m.parts[i].name).then(function (res) {
+                if (!res.ok) {
+                  throw fail("Unable to load " + m.parts[i].name + " (HTTP " + res.status +
+                    "). All " + m.parts.length + " parts of the split game data must be uploaded to " +
+                    dataPartBase + ".");
+                }
+
+                return res.arrayBuffer();
+              }, function (err) {
+                throw fail("Unable to load " + m.parts[i].name + ": " + (err && err.message || err));
+              });
+            }
+            return inflight[i];
+          }
+
+          function startPart(i) {
+            return partBytes(i).then(function (compressed) {
+              if (i + 1 < m.parts.length) partBytes(i + 1).catch(function () {});
+              inflight[i] = null;
+              var bytes = new Uint8Array(compressed);
+              if (!isGzip(bytes)) {
+                var sent = false;
+                current = {
+                  read: function () {
+                    if (sent) return Promise.resolve({ done: true });
+                    sent = true;
+                    return Promise.resolve({ done: false, value: bytes });
+                  }
+                };
+                return;
+              }
+              var decompressor = new DecompressionStream("gzip");
+              var writer = decompressor.writable.getWriter();
+              writer.write(bytes).then(function () {
+                return writer.close();
+              }).catch(function () {
+              });
+              current = decompressor.readable.getReader();
+            });
+          }
+
+          function pullOne(controller) {
+            if (!current) {
+              if (index >= m.parts.length) {
+                if (written !== m.rawBytes) {
+                  return Promise.reject(fail("Split game data is incomplete: got " + written +
+                    " of " + m.rawBytes + " bytes."));
+                }
+                controller.close();
+                return Promise.resolve();
+              }
+              return startPart(index).then(function () { return pullOne(controller); });
+            }
+            return current.read().then(function (step) {
+              if (step.done) {
+                current = null;
+                index++;
+                return pullOne(controller);
+              }
+              written += step.value.length;
+              controller.enqueue(step.value);
+            });
+          }
+
+          return new ReadableStream({
+
+            pull: function (controller) {
+              return pullOne(controller).catch(function (err) {
+
+                controller.error(err);
+              });
+            }
+          });
+        }
+
+        function isGzip(bytes) {
+          return bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+        }
+
+        function gunzipBytes(bytes) {
+          var decompressor = new DecompressionStream("gzip");
+          var writer = decompressor.writable.getWriter();
+          writer.write(bytes).then(function () { return writer.close(); }).catch(function () {});
+          return new Response(decompressor.readable).arrayBuffer();
+        }
+
+        window.fetch = function (input, init) {
+          var url = typeof input === "string" ? input : input && input.url;
+          if (url === wasmSentinel) {
+            return realFetch(buildUrl + "/WebGL.wasm.gz").then(function (res) {
+              if (!res.ok) {
+                throw fail("Unable to load " + buildUrl + "/WebGL.wasm.gz (HTTP " + res.status + ").");
+              }
+              return res.arrayBuffer();
+            }).then(function (bytes) {
+              bytes = new Uint8Array(bytes);
+              return isGzip(bytes) ? gunzipBytes(bytes) : bytes;
+            }).then(function (bytes) {
+              return new Response(bytes, {
+                status: 200,
+                headers: { "Content-Type": "application/wasm" }
+              });
+            });
+          }
+          if (url !== dataSentinel) return realFetch(input, init);
+          return loadManifest().then(function (m) {
+            return new Response(partsStream(m), {
+              status: 200,
+              headers: {
+                "Content-Type": "application/octet-stream",
+                "Content-Length": String(m.rawBytes)
+              }
+            });
+          });
+        };
+      })();
+
+      var script = document.createElement("script");
+      script.src = loaderUrl;
+      script.onload = () => {
+        if (!splitPayloadSupported) {
+
+          unityShowBanner("This browser is too old to load the game data. " +
+            "Use a current Chrome, Edge, Firefox, or Safari 16.4 or newer.", "error");
+          loadingBar.style.display = "none";
+          return;
+        }
+        createUnityInstance(canvas, config, (progress) => {
+          progressBarFull.style.width = 100 * progress + "%";
+          var progressLabel = document.getElementById("unity-progress-label");
+          if (progressLabel) { progressLabel.textContent = Math.round(100 * progress) + "%"; }
+        }).then((unityInstance) => {
+          loadingBar.style.display = "none";
+        }).catch((message) => {
+          alert(message);
+        });
+      };
+      document.body.appendChild(script);
+    </script>
+  </body>
+</html>
