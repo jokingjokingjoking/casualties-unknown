@@ -1,6 +1,6 @@
 @font-face {
   font-family: 'Retro Gaming Extended';
-  src: url('/TemplateData/Retro.Gaming.Extended.ttf') format('truetype');
+  src: url('/casualties-unknown/TemplateData/Retro.Gaming.Extended.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;
 }
@@ -34,7 +34,7 @@ body {
   position: absolute;
   inset: 0;
   z-index: -1;
-  background-image: url("/TemplateData/genover.png");
+  background-image: url("/casualties-unknown/TemplateData/genover.png");
   background-repeat: no-repeat;
   background-size: 100% 100%;
   opacity: 0.682;
@@ -193,7 +193,7 @@ button:focus-visible { outline: 2px solid #b2b2b2; outline-offset: 3px }
   content: "";
   position: absolute;
   top: 0; right: 0; bottom: 0; left: 0;
-  background-image: url('/TemplateData/genover.png');
+  background-image: url('/casualties-unknown/TemplateData/genover.png');
   background-repeat: no-repeat;
   background-size: 100% 100%;
   opacity: 0.682;
