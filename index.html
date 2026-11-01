@@ -17,64 +17,67 @@
         window.__cuLoaderFiles = { music: new Map(), languages: new Map() };
         window.__cuLoaderGeneration = 0;
 
+        var refreshSequence = 0;
         window.__cuLoaderRefresh = function () {
-          var req;
-          try {
-            req = indexedDB.open(DB_NAME, 1);
-          } catch (e) {
-            window.__cuLoaderGeneration++;
-            return;
-          }
-          req.onupgradeneeded = function () {
-            req.result.createObjectStore(STORE, { keyPath: ["tab", "name"] });
-          };
-          req.onerror = function () {
-            window.__cuLoaderGeneration++;
-          };
-          req.onsuccess = function () {
-            var db = req.result;
-            var finish = function () {
+          var sequence = ++refreshSequence;
+          return new Promise(function (resolve) {
+            var req;
+            var db = null;
+            var finished = false;
+            var finish = function (files) {
+              if (finished) return;
+              finished = true;
+              if (files && sequence === refreshSequence) window.__cuLoaderFiles = files;
               window.__cuLoaderGeneration++;
-              try { db.close(); } catch (e) {}
+              try { if (db) db.close(); } catch (e) {}
+              resolve(window.__cuLoaderFiles);
             };
-            var tx;
             try {
-              tx = db.transaction(STORE, "readonly");
+              req = indexedDB.open(DB_NAME, 1);
             } catch (e) {
               finish();
               return;
             }
-            var getAll = tx.objectStore(STORE).getAll();
-            getAll.onerror = finish;
-            getAll.onsuccess = function () {
-              var files = { music: new Map(), languages: new Map() };
-              var records = (getAll.result || []).filter(function (r) {
-                return r && r.blob && TABS.indexOf(r.tab) !== -1;
-              });
-              var pending = 0;
-              var done = function () {
-                if (pending === 0) {
-                  window.__cuLoaderFiles = files;
-                  finish();
-                }
-              };
-              records.forEach(function (record) {
-                files[record.tab].set(record.name, record.blob);
-                if (record.tab === "languages") {
-                  pending++;
-                  record.blob.text().then(function (text) {
-                    record.__cuText = text;
-                  }).catch(function () {
-                    record.__cuText = null;
-                  }).finally(function () {
-                    pending--;
-                    done();
-                  });
-                }
-              });
-              done();
+            req.onupgradeneeded = function () {
+              if (!req.result.objectStoreNames.contains(STORE)) {
+                req.result.createObjectStore(STORE, { keyPath: ["tab", "name"] });
+              }
             };
-          };
+            req.onerror = function () { finish(); };
+            req.onsuccess = function () {
+              db = req.result;
+              var tx;
+              try {
+                tx = db.transaction(STORE, "readonly");
+              } catch (e) {
+                finish();
+                return;
+              }
+              var getAll = tx.objectStore(STORE).getAll();
+              getAll.onerror = function () { finish(); };
+              getAll.onsuccess = function () {
+                var files = { music: new Map(), languages: new Map() };
+                var records = (getAll.result || []).filter(function (r) {
+                  return r && r.blob && TABS.indexOf(r.tab) !== -1;
+                });
+                var pending = 0;
+                var done = function () {
+                  if (pending === 0) finish(files);
+                };
+                records.forEach(function (record) {
+                  files[record.tab].set(record.name, record.blob);
+                  if (record.tab === "languages") {
+                    pending++;
+                    record.blob.text().catch(function () {}).finally(function () {
+                      pending--;
+                      done();
+                    });
+                  }
+                });
+                done();
+              };
+            };
+          });
         };
 
         window.__cuLoaderRefresh();
@@ -93,6 +96,194 @@
       </div>
       <div id="unity-warning"> </div>
     </div>
+    <main id="loader-menu" aria-labelledby="loader-title">
+      <header class="loader-heading">
+        <h1 id="loader-title">Casualties Unknown Loader</h1>
+      </header>
+      <nav class="settings-tabs-container" aria-label="Loader settings">
+        <button class="settings-tab active" type="button" data-tab="music" aria-selected="true">
+          <span>Custom music</span><span class="tab-count" data-count="music">0</span>
+        </button>
+        <button class="settings-tab" type="button" data-tab="languages" aria-selected="false">
+          <span>Language</span><span class="tab-count" data-count="languages">0</span>
+        </button>
+      </nav>
+      <section class="make-hr-work loader-files" aria-label="Selected files">
+        <hr>
+        <div id="loader-file-list" class="loader-item-list" aria-live="polite"></div>
+        <div class="config-button-container">
+          <button id="add-file-button" class="config-button" type="button">Add music</button>
+          <input id="file-picker" type="file" multiple hidden>
+        </div>
+      </section>
+      <div class="start">
+        <button id="start-game-button" class="start-button" type="button">Start game</button>
+      </div>
+      <p id="loader-status" class="loader-status" role="status" aria-live="polite"></p>
+    </main>
+    <script>
+      (function () {
+        var activeTab = "music";
+        var menu = document.getElementById("loader-menu");
+        var fileList = document.getElementById("loader-file-list");
+        var filePicker = document.getElementById("file-picker");
+        var addButton = document.getElementById("add-file-button");
+        var status = document.getElementById("loader-status");
+        var tabs = Array.prototype.slice.call(document.querySelectorAll(".settings-tab"));
+
+        function openDatabase() {
+          return new Promise(function (resolve, reject) {
+            var request;
+            try {
+              request = indexedDB.open("cu-loader", 1);
+            } catch (error) {
+              reject(error);
+              return;
+            }
+            request.onupgradeneeded = function () {
+              if (!request.result.objectStoreNames.contains("files")) {
+                request.result.createObjectStore("files", { keyPath: ["tab", "name"] });
+              }
+            };
+            request.onsuccess = function () { resolve(request.result); };
+            request.onerror = function () { reject(request.error); };
+          });
+        }
+
+        function setStatus(message) {
+          status.textContent = message;
+        }
+
+        function readLanguageName(blob, fallback) {
+          if (!blob || typeof blob.text !== "function") return Promise.resolve(fallback);
+          return blob.text().then(function (text) {
+            var data;
+            try { data = JSON.parse(text); } catch (error) { return fallback; }
+            var metadata = data && data.metadata && typeof data.metadata === "object"
+              ? data.metadata : data;
+            var candidates = [metadata.languageName, metadata.language_name,
+              metadata.localeName, metadata.locale_name];
+            for (var i = 0; i < candidates.length; i++) {
+              if (typeof candidates[i] === "string" && candidates[i].trim()) {
+                return candidates[i].trim();
+              }
+            }
+            return fallback;
+          }).catch(function () { return fallback; });
+        }
+
+        function renderFiles() {
+          var files = window.__cuLoaderFiles[activeTab];
+          fileList.replaceChildren();
+          document.querySelectorAll("[data-count]").forEach(function (count) {
+            count.textContent = window.__cuLoaderFiles[count.dataset.count].size;
+          });
+          if (!files.size) {
+            var empty = document.createElement("p");
+            empty.className = "empty-files";
+            empty.textContent = "No files added";
+            fileList.appendChild(empty);
+            return;
+          }
+          files.forEach(function (blob, name) {
+            var item = document.createElement("div");
+            item.className = "example-item-container";
+            var row = document.createElement("div");
+            row.className = "example-item";
+            var fileName = document.createElement("p");
+            fileName.className = "example-item-name";
+            fileName.textContent = name;
+            fileName.title = name;
+            if (activeTab === "languages") {
+              readLanguageName(blob, name).then(function (label) {
+                if (fileName.isConnected) fileName.textContent = label;
+              });
+            }
+            var remove = document.createElement("button");
+            remove.className = "delete-example-item";
+            remove.type = "button";
+            remove.setAttribute("aria-label", "Remove " + name);
+            remove.title = "Remove file";
+            remove.textContent = "×";
+            remove.addEventListener("click", function () { deleteFile(activeTab, name); });
+            row.append(fileName, remove);
+            item.appendChild(row);
+            fileList.appendChild(item);
+          });
+        }
+
+        function refreshFiles() {
+          return window.__cuLoaderRefresh().then(renderFiles);
+        }
+
+        function saveFiles(tab, selectedFiles) {
+          return openDatabase().then(function (db) {
+            return new Promise(function (resolve, reject) {
+              var transaction = db.transaction("files", "readwrite");
+              var store = transaction.objectStore("files");
+              Array.prototype.forEach.call(selectedFiles, function (file) {
+                store.put({ tab: tab, name: file.name, blob: file });
+              });
+              transaction.oncomplete = function () { db.close(); resolve(); };
+              transaction.onerror = function () { db.close(); reject(transaction.error); };
+              transaction.onabort = function () { db.close(); reject(transaction.error); };
+            });
+          }).then(refreshFiles);
+        }
+
+        function deleteFile(tab, name) {
+          openDatabase().then(function (db) {
+            return new Promise(function (resolve, reject) {
+              var transaction = db.transaction("files", "readwrite");
+              transaction.objectStore("files").delete([tab, name]);
+              transaction.oncomplete = function () { db.close(); resolve(); };
+              transaction.onerror = function () { db.close(); reject(transaction.error); };
+              transaction.onabort = function () { db.close(); reject(transaction.error); };
+            });
+          }).then(refreshFiles).then(function () {
+            setStatus("");
+          }).catch(function () {
+            setStatus("Could not remove that file.");
+          });
+        }
+
+        tabs.forEach(function (tab) {
+          tab.addEventListener("click", function () {
+            activeTab = tab.dataset.tab;
+            tabs.forEach(function (item) {
+              var selected = item === tab;
+              item.classList.toggle("active", selected);
+              item.setAttribute("aria-selected", selected ? "true" : "false");
+            });
+            addButton.textContent = activeTab === "music" ? "Add music" : "Add language file";
+            filePicker.accept = activeTab === "music" ? "audio/*" : "";
+            setStatus("");
+            renderFiles();
+          });
+        });
+
+        addButton.addEventListener("click", function () { filePicker.click(); });
+        filePicker.addEventListener("change", function () {
+          if (!filePicker.files.length) return;
+          var count = filePicker.files.length;
+          saveFiles(activeTab, filePicker.files).then(function () {
+            setStatus(count === 1 ? "File added." : count + " files added.");
+            filePicker.value = "";
+          }).catch(function () {
+            setStatus("Could not save those files.");
+          });
+        });
+
+        window.__cuStartGame = function () {
+          menu.hidden = true;
+          setStatus("");
+        };
+
+        window.__cuLoaderRefresh().then(renderFiles).catch(function () {
+          setStatus("Could not load saved files.");
+        });
+      })();
+    </script>
     <script>
       window.addEventListener("load", function () {
         if ("serviceWorker" in navigator) {
@@ -601,8 +792,6 @@
         document.getElementsByTagName('head')[0].appendChild(meta);
       }
 
-      loadingBar.style.display = "flex";
-
       var dataPartsManifest = buildUrl + "/WebGL.data.parts.json";
       var dataPartBase = buildUrl + "/";
       var dataSentinel = "cu-parts://WebGL.data";
@@ -765,27 +954,34 @@
         };
       })();
 
-      var script = document.createElement("script");
-      script.src = loaderUrl;
-      script.onload = () => {
-        if (!splitPayloadSupported) {
-
-          unityShowBanner("This browser is too old to load the game data. " +
-            "Use a current Chrome, Edge, Firefox, or Safari 16.4 or newer.", "error");
+      document.getElementById("start-game-button").addEventListener("click", function () {
+        window.__cuStartGame();
+        loadingBar.style.display = "flex";
+        var script = document.createElement("script");
+        script.src = loaderUrl;
+        script.onload = function () {
+          if (!splitPayloadSupported) {
+            unityShowBanner("This browser is too old to load the game data. " +
+              "Use a current Chrome, Edge, Firefox, or Safari 16.4 or newer.", "error");
+            loadingBar.style.display = "none";
+            return;
+          }
+          createUnityInstance(canvas, config, function (progress) {
+            progressBarFull.style.width = 100 * progress + "%";
+            var progressLabel = document.getElementById("unity-progress-label");
+            if (progressLabel) { progressLabel.textContent = Math.round(100 * progress) + "%"; }
+          }).then(function () {
+            loadingBar.style.display = "none";
+          }).catch(function (message) {
+            alert(message);
+          });
+        };
+        script.onerror = function () {
           loadingBar.style.display = "none";
-          return;
-        }
-        createUnityInstance(canvas, config, (progress) => {
-          progressBarFull.style.width = 100 * progress + "%";
-          var progressLabel = document.getElementById("unity-progress-label");
-          if (progressLabel) { progressLabel.textContent = Math.round(100 * progress) + "%"; }
-        }).then((unityInstance) => {
-          loadingBar.style.display = "none";
-        }).catch((message) => {
-          alert(message);
-        });
-      };
-      document.body.appendChild(script);
+          unityShowBanner("Unable to load the game loader script.", "error");
+        };
+        document.body.appendChild(script);
+      }, { once: true });
     </script>
   </body>
 </html>
